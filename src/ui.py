@@ -12,7 +12,7 @@ import random
 # Add src directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.requests_hybrid import ISCRequestsHybrid, ensure_playwright_browsers
+from src.requests_hybrid import ISCRequestsHybrid
 from src.utils import validate_csv_input, create_csv_template, merge_data, save_output_csv
 from dotenv import load_dotenv
 
@@ -118,20 +118,8 @@ def main():
         st.session_state.last_failed = None
     if 'last_sync_time' not in st.session_state:
         st.session_state.last_sync_time = None
-    if 'browsers_initialized' not in st.session_state:
-        st.session_state.browsers_initialized = False
     
     st.title("ISC Slayer - Policy Data Scraper")
-    
-    # Initialize browsers on first run
-    if not st.session_state.browsers_initialized:
-        with st.spinner("🔧 Initializing browser components..."):
-            success = ensure_playwright_browsers()
-            st.session_state.browsers_initialized = success
-            if success:
-                st.success("✅ Browser components ready!")
-            else:
-                st.error("❌ Failed to initialize browser components")
     
     # Input section
     with st.sidebar:
@@ -189,9 +177,6 @@ def main():
     
     # Start processing
     if st.button("Start Sync"):
-        if not st.session_state.browsers_initialized:
-            st.error("❌ Browser components not initialized. Please refresh the page.")
-            return
         if username and password and uploaded_file:
             try:
                 # Read and validate CSV

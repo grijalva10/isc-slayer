@@ -67,32 +67,33 @@ class ISCRequestsHybrid:
         
     async def login(self) -> bool:
         """Login using Playwright, then extract cookies for requests session"""
-        # Ensure browsers are installed before starting
-        if not ensure_playwright_browsers():
-            logging.error("Failed to install Playwright browsers")
-            return False
-        
         playwright = await async_playwright().start()
         
         try:
-            # Launch browser with cloud-friendly settings
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox", 
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--no-first-run",
-                    "--no-zygote",
-                    "--single-process",
-                    "--disable-extensions"
-                ]
-            )
+            # Try to launch browser normally first
+            browser = await playwright.chromium.launch(headless=True)
         except Exception as e:
-            logging.error(f"Browser launch failed: {e}")
-            await playwright.stop()
-            return False
+            if "Executable doesn't exist" in str(e):
+                # Install browsers and try again
+                logging.info("Installing Playwright browsers...")
+                import subprocess
+                import sys
+                try:
+                    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], 
+                                 check=True, capture_output=True, text=True, timeout=120)
+                    # Try again with cloud-safe args
+                    browser = await playwright.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-setuid-sandbox"]
+                    )
+                except Exception as install_error:
+                    logging.error(f"Failed to install/launch browser: {install_error}")
+                    await playwright.stop()
+                    return False
+            else:
+                logging.error(f"Browser launch failed: {e}")
+                await playwright.stop()
+                return False
         
         page = await browser.new_page()
         
