@@ -24,7 +24,58 @@ class ISCRequestsHybrid:
     async def login(self) -> bool:
         """Login using Playwright, then extract cookies for requests session"""
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
+        
+        try:
+            # Try to launch browser with different options for cloud environments
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox", 
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--single-process"
+                ]
+            )
+        except Exception as e:
+            if "Executable doesn't exist" in str(e):
+                logging.info("Trying to use system chromium browser...")
+                # Try to use system chromium browser
+                try:
+                    browser = await playwright.chromium.launch(
+                        headless=True,
+                        executable_path="/usr/bin/chromium-browser",
+                        args=[
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox", 
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--no-first-run",
+                            "--no-zygote",
+                            "--single-process"
+                        ]
+                    )
+                except Exception as system_error:
+                    logging.info("System chromium failed, trying to install Playwright browsers...")
+                    # Fallback: try to install playwright browsers programmatically
+                    import subprocess
+                    import sys
+                    try:
+                        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], 
+                                     check=True, capture_output=True, text=True)
+                        # Try launching again after installation
+                        browser = await playwright.chromium.launch(headless=True)
+                    except Exception as install_error:
+                        logging.error(f"All browser launch methods failed: {install_error}")
+                        await playwright.stop()
+                        return False
+            else:
+                logging.error(f"Browser launch failed: {e}")
+                await playwright.stop()
+                return False
+        
         page = await browser.new_page()
         
         try:
