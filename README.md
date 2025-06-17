@@ -12,7 +12,7 @@ This repository contains comprehensive development plans and implementation guid
 
 ### **🎯 Project Goals**
 Build a tool that:
-- Accepts CSV files with `policy_number` values
+- Accepts CSV files with only `policy_number` column required (other fields auto-generated)
 - Uses headless browser automation (Playwright) for ISC platform interaction
 - Provides modern Streamlit-based GUI interface
 - Exports enriched CSV data with scraped policy information
@@ -52,10 +52,15 @@ Build a tool that:
 - Search: `https://isc.onlinemga.com/amp/search/advancedsearch`
 - Details: `https://isc.onlinemga.com/amp/detail/view/<app_id>`
 
+### **CSV Input Requirements**
+- **Required**: Only `policy_number` column
+- **Optional**: Any additional columns (will be preserved)
+- **Auto-generated**: Missing fields are automatically created as empty columns
+
 ### **Expected Output Fields**
-- `app_id`, `status`, `insured_company_name`
-- `policy_number`, `effective_start_date`, `effective_end_date`
-- `carrier`, `cost`, `product_id`, `state`, `program`
+- `app_id`, `status`, `applicant_company`
+- `policy_number`, `effective_date`, `expiration_date`, `cancellation_date`
+- `state`, `program`, `total_cost`
 - Plus all original CSV columns preserved
 
 ## 🔧 **Development Workflow**

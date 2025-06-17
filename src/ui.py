@@ -13,7 +13,7 @@ import random
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.requests_hybrid import ISCRequestsHybrid
-from src.utils import validate_csv_input, create_csv_template, merge_data, save_output_csv
+from src.utils import validate_csv_input, create_csv_template, merge_data, save_output_csv, prepare_input_dataframe
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -121,6 +121,29 @@ def main():
     
     st.title("ISC Slayer - Policy Data Scraper")
     
+    # Try to load last results from file if session state is empty but file exists
+    output_path = os.path.join('data', 'output', 'enriched_data.csv')
+    failed_path = os.path.join('data', 'output', 'failed_policies.csv')
+    
+    if st.session_state.last_results is None and os.path.exists(output_path):
+        try:
+            # Load the last saved results
+            last_results_df = pd.read_csv(output_path)
+            if len(last_results_df) > 0:
+                st.session_state.last_results = last_results_df
+                
+                # Try to load failed policies too
+                if os.path.exists(failed_path):
+                    failed_df = pd.read_csv(failed_path)
+                    if 'policy_number' in failed_df.columns:
+                        st.session_state.last_failed = failed_df['policy_number'].tolist()
+                
+                # Set approximate sync time from file modification
+                file_mod_time = os.path.getmtime(output_path)
+                st.session_state.last_sync_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file_mod_time))
+        except Exception as e:
+            pass  # Silently fail, will show upload section instead
+    
     # Input section
     with st.sidebar:
         st.header("Login")
@@ -134,8 +157,23 @@ def main():
     use_concurrent = True  # our new approach is concurrent by default
     concurrency_limit = 5  # optimal for our hybrid approach
 
+    # Show results section if we have results
+    if st.session_state.last_results is not None and not st.session_state.last_results.empty:
+        st.success(f"📊 **{len(st.session_state.last_results)} policies processed** (Last sync: {st.session_state.last_sync_time})")
+        
+        # Single download button for all results
+        st.download_button(
+            label="⬇️ **Download Complete Results**",
+            data=st.session_state.last_results.to_csv(index=False),
+            file_name="enriched_data.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+
     # File upload
-    uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
+    uploaded_file = st.file_uploader("Upload CSV with Policy Numbers", type=['csv'])
     
     # Template download
     if st.button("Download CSV Template"):
@@ -147,36 +185,8 @@ def main():
             mime="text/csv"
         )
     
-    # Show last sync results if they exist
-    if st.session_state.last_results is not None:
-        st.markdown("---")
-        st.subheader("📊 Last Sync Results")
-        st.markdown(f"Last sync completed at: {st.session_state.last_sync_time}")
-        
-        # Show successful results
-        if not st.session_state.last_results.empty:
-            st.success(f"✅ Found {len(st.session_state.last_results)} successful results")
-            st.download_button(
-                label="Download Results",
-                data=st.session_state.last_results.to_csv(index=False),
-                file_name="enriched_data.csv",
-                mime="text/csv"
-            )
-            st.dataframe(st.session_state.last_results.head())
-        
-        # Show failed policies
-        if st.session_state.last_failed:
-            st.warning(f"❌ {len(st.session_state.last_failed)} policies failed")
-            failed_df = pd.DataFrame({'policy_number': st.session_state.last_failed})
-            st.download_button(
-                label="Download Failed Policies",
-                data=failed_df.to_csv(index=False),
-                file_name="failed_policies.csv",
-                mime="text/csv"
-            )
-    
     # Start processing
-    if st.button("Start Sync"):
+    if st.button("Start Processing", use_container_width=True, type="primary"):
         if username and password and uploaded_file:
             try:
                 # Read and validate CSV
@@ -185,8 +195,10 @@ def main():
                     st.error("Invalid CSV format. Please ensure your CSV has a 'policy_number' column.")
                     return
                 
+                # Ensure all required columns exist, creating empty ones if missing
+                df = prepare_input_dataframe(df)
+                
                 # Preprocess policy numbers - clean whitespace and quotes
-                st.info("Preprocessing policy numbers...")
                 original_count = len(df)
                 df['policy_number'] = df['policy_number'].astype(str).str.strip().str.strip('"\'')
                 df = df[df['policy_number'].str.len() > 0]  # Remove empty rows
@@ -201,7 +213,7 @@ def main():
                 if cleaned_count < original_count:
                     st.warning(f"Cleaned data: {original_count} → {cleaned_count} rows (removed {original_count - cleaned_count} invalid/duplicate entries)")
                 
-                st.success(f"Ready to process {cleaned_count} policy numbers")
+                st.info(f"Processing {cleaned_count} policy numbers...")
                 
                 # Store policy count for time estimation
                 st.session_state.policy_count = cleaned_count
@@ -218,7 +230,6 @@ def main():
 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                hack_text = st.empty()
 
                 try:
                     # 🚀 Run the async scraping process
@@ -230,7 +241,7 @@ def main():
                             df,
                             progress_bar,
                             status_text,
-                            hack_text,
+                            None,  # No hack text
                             batch_size,
                             concurrency_limit,
                             use_concurrent,
@@ -239,48 +250,49 @@ def main():
 
                     # ⏱️ Compute performance metrics
                     elapsed = time.time() - start_time  # seconds
-                    avg_auto = elapsed / cleaned_count
-                    manual_avg = 60  # seconds per policy (conservative manual estimate)
-                    manual_total = manual_avg * cleaned_count
                     
-                    # Show performance metrics
-                    st.success(f"""
-                    🎯 Performance Metrics:
-                    - Time saved: {manual_total/3600:.1f} hours
-                    - Speedup: {manual_avg/avg_auto:.1f}x faster than manual
-                    - Rate: {cleaned_count/elapsed:.1f} policies/minute
-                    """)
+                    # Save results - merge scraped data with original CSV to preserve all rows
+                    # Ensure output directory exists
+                    output_dir = os.path.join('data', 'output')
+                    os.makedirs(output_dir, exist_ok=True)
                     
-                    # Save results
                     if results:
-                        # Ensure output directory exists
-                        output_dir = os.path.join('data', 'output')
-                        os.makedirs(output_dir, exist_ok=True)
+                        # Merge scraped results with original CSV to preserve all input rows
+                        output_df = merge_data(df, results)
+                        success_count = len(results)
+                    else:
+                        # No results found, but still save original CSV with empty scraped columns
+                        output_df = df.copy()
+                        success_count = 0
+                    
+                    output_path = os.path.join(output_dir, 'enriched_data.csv')
+                    if save_output_csv(output_df, output_path):
+                        # Store results in session state
+                        st.session_state.last_results = output_df.copy()
+                        st.session_state.last_failed = failed_policies if failed_policies else []
+                        st.session_state.last_sync_time = time.strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # Save successful results
-                        output_df = pd.DataFrame(results)
-                        output_path = os.path.join(output_dir, 'enriched_data.csv')
-                        if save_output_csv(output_df, output_path):
-                            st.success(f"✅ Results saved to: {output_path}")
-                            
-                            # Store results in session state
-                            st.session_state.last_results = output_df
-                            st.session_state.last_failed = failed_policies
-                            st.session_state.last_sync_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                            
-                            # Show preview
-                            st.dataframe(output_df.head())
-                        else:
-                            st.error("Failed to save results.")
+                        # Show success message
+                        st.success(f"✅ **Processing Complete!** Found data for {success_count}/{cleaned_count} policies in {elapsed:.1f} seconds")
+                        
+                        # Show download button immediately
+                        st.download_button(
+                            label="⬇️ **Download Complete Results**",
+                            data=output_df.to_csv(index=False),
+                            file_name="enriched_data.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="immediate_download"
+                        )
                         
                         # Save failed policies
                         if failed_policies:
                             failed_df = pd.DataFrame({'policy_number': failed_policies})
                             failed_path = os.path.join(output_dir, 'failed_policies.csv')
-                            if save_output_csv(failed_df, failed_path):
-                                st.warning(f"❌ Failed policies saved to: {failed_path}")
+                            save_output_csv(failed_df, failed_path)
+                            
                     else:
-                        st.warning("No results found.")
+                        st.error("Failed to save results.")
                         
                 except Exception as e:
                     st.error(f"❌ Error during processing: {str(e)}")
